@@ -12,7 +12,8 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.experimental.and
 
-open class NamedPipeToSendMessage<Type>(override val contents: Type, override val channel: NamedPipeChannel) : ToSendMessage<Type,NamedPipeChannel> {
+open class NamedPipeToSendMessage<Type>(override val contents: Type, override val channel: NamedPipeChannel) :
+        ToSendMessage<Type,NamedPipeChannel> {
 
     override fun writeOut(dataOutputStream: DataOutputStream) {
         writeMessageType(dataOutputStream)
@@ -91,7 +92,8 @@ open class NamedPipeToSendMessage<Type>(override val contents: Type, override va
     }
 }
 
-class NamedPipeToSendReply<Type>(override val contents: Type, val replyToID: Int, channel: NamedPipeChannel) :NamedPipeToSendMessage<Type>(contents,channel), ToSendMessage<Type,NamedPipeChannel> {
+class NamedPipeToSendReply<Type>(override val contents: Type, val replyToID: Int, channel: NamedPipeChannel) :
+        NamedPipeToSendMessage<Type>(contents,channel), ToSendMessage<Type,NamedPipeChannel> {
     override fun writeMessageType(dataOutputStream: DataOutputStream) {
         dataOutputStream.writeByte(NamedPipeChannel.REPLY_MESSAGE.toInt())
         dataOutputStream.writeInt(replyToID)
@@ -99,9 +101,16 @@ class NamedPipeToSendReply<Type>(override val contents: Type, val replyToID: Int
 
 }
 
-open class NamedPipeReceivedMessage<Type>(override val contents: Type, override val channel: NamedPipeChannel) : ReceivedMessage<Type,NamedPipeChannel>
+open class NamedPipeReceivedMessage<Type>(override val contents: Type, val id: Int, override val channel: NamedPipeChannel) :
+        ReceivedMessage<Type,NamedPipeChannel> {
+    override fun <ReplyType> reply(reply: ToSendMessage<ReplyType, NamedPipeChannel>) {
+        channel.send(NamedPipeToSendReply(reply.contents,this.id,channel))
+    }
 
-class NamedPipeReceivedReply<Type>(val message: ReceivedMessage<Type, NamedPipeChannel>, channel: NamedPipeChannel) : NamedPipeReceivedMessage<Type>(message.contents,channel) , Reply<Type,NamedPipeChannel> {
+}
+
+class NamedPipeReceivedReply<Type>(val message: NamedPipeReceivedMessage<Type>, channel: NamedPipeChannel) :
+        NamedPipeReceivedMessage<Type>(message.contents,message.id,channel) , Reply<Type,NamedPipeChannel> {
     override val contents
         get() = message.contents
 
@@ -154,7 +163,7 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
 
     init {
         (File(channelHome)).mkdirs()
-        //todo validate names
+        //todo validate names, for security//paths
         val sendName = name + "send"
         sendPipe = NamedPipe(File(channelHome, sendName), openExistingFile = true, deleteOnClose = !persist)
         val receiveName = name + "receive"
@@ -185,7 +194,7 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
             }
             REPLY_MESSAGE -> {
                 val replyToID = receiveStream.readInt()
-                val replyMessage: ReceivedMessage<*,NamedPipeChannel> = readSingleMessage()
+                val replyMessage: NamedPipeReceivedMessage<*> = readSingleMessage()
                 val reply = NamedPipeReceivedReply(replyMessage, this)
                 handleReply(reply, replyToID)
             }
@@ -194,14 +203,14 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
         }
     }
 
-    private fun readSingleMessage(): ReceivedMessage<*,NamedPipeChannel> {
+    private fun readSingleMessage(): NamedPipeReceivedMessage<*> {
         val contentsType = receiveStream.readByte()
         val messageID: Int = receiveStream.readInt()
         if (contentsType < 0) {
             val arrayLength = receiveStream.readInt()
-            return NamedPipeReceivedMessage((0 until arrayLength).map { readOfType(contentsType) }.toTypedArray(),this)
+            return NamedPipeReceivedMessage((0 until arrayLength).map { readOfType(contentsType) }.toTypedArray(),messageID,this)
         }
-        return NamedPipeReceivedMessage(readOfType(contentsType),this)
+        return NamedPipeReceivedMessage(readOfType(contentsType),messageID,this)
     }
 
     private fun readOfType(contentsType: Byte): Any {
@@ -216,20 +225,20 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
             BOOLEAN -> receiveStream.readBoolean()
             OBJECT -> ObjectInputStream(receiveStream).readObject()
             else -> {
-                throw IllegalStateException("Invalid data recieved")
+                throw IllegalStateException("Invalid data received")
             }
         }
     }
 
     private fun handleReply(reply: Reply<*,NamedPipeChannel>, replyToID: Int) {
-        if (replyToID in waiting) {
-            replies[replyToID] = reply
-            while (!waiting[replyToID]!!.isLocked);//prevents unlocking before locking
-            waiting[replyToID]!!.unlock()
-        } else if (replyToID in onReply) {
-            onReply[replyToID]!!(reply)
-        } else {
-            throw IllegalStateException("Received a reply to a nonexistent message")
+        when (replyToID) {
+            in waiting -> {
+                replies[replyToID] = reply
+                while (!waiting[replyToID]!!.isLocked);//prevents unlocking before locking
+                waiting[replyToID]!!.unlock()
+            }
+            in onReply -> onReply[replyToID]!!(reply)
+            else -> throw IllegalStateException("Received a reply to a nonexistent message")
         }
     }
 

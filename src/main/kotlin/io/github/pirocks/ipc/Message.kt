@@ -14,7 +14,9 @@ interface ToSendMessage<MessageType, ChannelType: Channel<ChannelType>> : Messag
 
 interface Reply<MessageType,ChannelType: Channel<ChannelType>> : ReceivedMessage<MessageType,ChannelType>
 
-interface ReceivedMessage<Type,ChannelType: Channel<ChannelType>> : Message<Type,ChannelType>
+interface ReceivedMessage<Type,ChannelType: Channel<ChannelType>> : Message<Type,ChannelType>{
+    fun <ReplyType> reply(reply: ToSendMessage<ReplyType,ChannelType>)
+}
 
 interface Channel<ChannelType: Channel<ChannelType>> : Closeable {
     val onReceivedMessage: (ReceivedMessage<*,ChannelType>) -> Unit // not called for replies
