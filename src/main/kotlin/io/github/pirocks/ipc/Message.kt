@@ -30,7 +30,7 @@ interface Channel<ChannelType: Channel<ChannelType>> : Closeable {
     override fun close()
 }
 
-open class ToSendMessageImpl<Type,ChannelType: Channel<ChannelType>>(override val contents: Type, override val channel: ChannelType) : ToSendMessage<Type,ChannelType> {
+open class ToSendMessageImpl<Type>(override val contents: Type, override val channel: ChannelImpl) : ToSendMessage<Type,ChannelImpl> {
 
     override fun writeOut(dataOutputStream: DataOutputStream) {
         writeMessageType(dataOutputStream)
@@ -109,7 +109,7 @@ open class ToSendMessageImpl<Type,ChannelType: Channel<ChannelType>>(override va
     }
 }
 
-class ToSendReplyImpl<Type,ChannelType: Channel<ChannelType>>(override val contents: Type, val replyToID: Int,channel: ChannelType) :ToSendMessageImpl<Type,ChannelType>(contents,channel), ToSendMessage<Type,ChannelType> {
+class ToSendReplyImpl<Type>(override val contents: Type, val replyToID: Int,channel: ChannelImpl) :ToSendMessageImpl<Type>(contents,channel), ToSendMessage<Type,ChannelImpl> {
     override fun writeMessageType(dataOutputStream: DataOutputStream) {
         dataOutputStream.writeByte(ChannelImpl.REPLY_MESSAGE.toInt())
         dataOutputStream.writeInt(replyToID)
@@ -117,10 +117,9 @@ class ToSendReplyImpl<Type,ChannelType: Channel<ChannelType>>(override val conte
 
 }
 
-open class ReceivedMessageImpl<out Type,ChannelType: Channel<ChannelType>>(override val contents: Type, override val channel: ChannelType) : ReceivedMessage<Type,ChannelType> {
-}
+open class ReceivedMessageImpl<out Type>(override val contents: Type, override val channel: ChannelImpl) : ReceivedMessage<Type,ChannelImpl>
 
-class ReceivedReplyImpl<out Type,ChannelType:Channel<ChannelType>>(val message: ReceivedMessage<Type,ChannelType>, val replyToID: Int, channel: ChannelType) : ReceivedMessageImpl<Type,ChannelType>(message.contents,channel) , Reply<Type,ChannelType> {
+class ReceivedReplyImpl<out Type>(val message: ReceivedMessage<Type, ChannelImpl>, channel: ChannelImpl) : ReceivedMessageImpl<Type>(message.contents,channel) , Reply<Type,ChannelImpl> {
     override val contents
         get() = message.contents
 
@@ -205,7 +204,7 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*,ChannelImpl
             REPLY_MESSAGE -> {
                 val replyToID = receiveStream.readInt()
                 val replyMessage: ReceivedMessage<*,ChannelImpl> = readSingleMessage()
-                val reply = ReceivedReplyImpl(replyMessage, replyToID,this)
+                val reply = ReceivedReplyImpl(replyMessage, this)
                 handleReply(reply, replyToID)
             }
 
