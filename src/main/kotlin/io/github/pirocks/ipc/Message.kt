@@ -9,7 +9,7 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.experimental.and
 
-interface Message<out Type, ChannelType: Channel<ChannelType>> {
+interface Message<Type, ChannelType: Channel<ChannelType>> {
     val contents: Type
     val channel: ChannelType
 }
@@ -18,9 +18,9 @@ interface ToSendMessage<MessageType, ChannelType: Channel<ChannelType>> : Messag
     fun writeOut(dataOutputStream: DataOutputStream)
 }
 
-interface Reply<out MessageType,ChannelType: Channel<ChannelType>> : ReceivedMessage<MessageType,ChannelType>
+interface Reply<MessageType,ChannelType: Channel<ChannelType>> : ReceivedMessage<MessageType,ChannelType>
 
-interface ReceivedMessage<out Type,ChannelType: Channel<ChannelType>> : Message<Type,ChannelType>
+interface ReceivedMessage<Type,ChannelType: Channel<ChannelType>> : Message<Type,ChannelType>
 
 interface Channel<ChannelType: Channel<ChannelType>> : Closeable {
     val onReceivedMessage: (ReceivedMessage<*,ChannelType>) -> Unit // not called for replies
@@ -117,9 +117,9 @@ class ToSendReplyImpl<Type>(override val contents: Type, val replyToID: Int,chan
 
 }
 
-open class ReceivedMessageImpl<out Type>(override val contents: Type, override val channel: ChannelImpl) : ReceivedMessage<Type,ChannelImpl>
+open class ReceivedMessageImpl<Type>(override val contents: Type, override val channel: ChannelImpl) : ReceivedMessage<Type,ChannelImpl>
 
-class ReceivedReplyImpl<out Type>(val message: ReceivedMessage<Type, ChannelImpl>, channel: ChannelImpl) : ReceivedMessageImpl<Type>(message.contents,channel) , Reply<Type,ChannelImpl> {
+class ReceivedReplyImpl<Type>(val message: ReceivedMessage<Type, ChannelImpl>, channel: ChannelImpl) : ReceivedMessageImpl<Type>(message.contents,channel) , Reply<Type,ChannelImpl> {
     override val contents
         get() = message.contents
 
