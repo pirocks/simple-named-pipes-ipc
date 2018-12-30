@@ -9,7 +9,7 @@ import kotlin.concurrent.withLock
 import kotlin.experimental.and
 
 interface Message<out Type> {
-    val id : Int
+    val id: Int
     val contents: Type
 }
 
@@ -31,14 +31,104 @@ interface Channel : Closeable {
     override fun close()
 }
 
+open class ToSendMessageImpl<Type>(channel: ChannelImpl, override val contents: Type) : ToSendMessage<Type> {
 
-open class MessageImpl<out Type>(override val contents: Type, override val id: Int) : ReceivedMessage<Type> {
-    override fun reply(reply: Reply<*>) {
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+    override val id: Int = channel.messageIDCount.getAndIncrement()//todo refactor to remove dependency on channel
+
+    override fun writeOut(dataOutputStream: DataOutputStream) {
+        writeMessagePreamble(dataOutputStream)
+        val contentsCopy = contents//needed for smart casting
+        if (contentsCopy is Array<*>) {
+            val len = contentsCopy.size
+            val firstItem = contentsCopy[0]
+            dataOutputStream.writeByte(anyToByteEncodingType(firstItem!!))//todo handle null items
+            dataOutputStream.writeInt(len)
+            contentsCopy.forEach { writeAny(it!!,dataOutputStream) }
+        } else if (anyToByteEncodingType(contentsCopy!!) < 0) {
+            val len = when(contentsCopy) {
+                is IntArray -> contentsCopy.size
+                is ByteArray -> contentsCopy.size
+                is CharArray -> contentsCopy.size
+                is ShortArray -> contentsCopy.size
+                is FloatArray -> contentsCopy.size
+                is DoubleArray -> contentsCopy.size
+                is BooleanArray -> contentsCopy.size
+                else -> throw IllegalStateException("This should not happen")
+            }
+            dataOutputStream.writeByte(anyToByteEncodingType(contentsCopy))
+            dataOutputStream.writeInt(len)
+            when(contentsCopy) {
+                is IntArray -> contentsCopy.forEach(dataOutputStream::writeInt)
+                is ByteArray -> contentsCopy.forEach { dataOutputStream.writeByte(it.toInt()) }
+                is CharArray -> contentsCopy.forEach { dataOutputStream.writeChar(it.toInt()) }
+                is ShortArray -> contentsCopy.forEach { dataOutputStream.writeShort(it.toInt()) }
+                is FloatArray -> contentsCopy.forEach(dataOutputStream::writeFloat)
+                is DoubleArray -> contentsCopy.forEach(dataOutputStream::writeDouble)
+                is BooleanArray -> contentsCopy.forEach(dataOutputStream::writeBoolean)
+                else -> throw IllegalStateException("This should not happen")
+            }
+        } else {
+            dataOutputStream.writeByte(anyToByteEncodingType(contentsCopy))
+        }
+    }
+
+    protected open fun writeMessagePreamble(dataOutputStream: DataOutputStream) {
+        dataOutputStream.writeByte(ChannelImpl.PROTOCOL_VERSION.toInt())
+        dataOutputStream.writeByte(ChannelImpl.SINGLE_MESSAGE.toInt())
+    }
+
+    private fun writeAny(any: Any, dataOutputStream: DataOutputStream) {
+        when (any) {
+            is Int -> dataOutputStream.writeInt(any)
+            is Byte -> dataOutputStream.writeByte(any.toInt())
+            is Char -> dataOutputStream.writeChar(any.toInt())
+            is String -> dataOutputStream.writeUTF(any)
+            is Short -> dataOutputStream.writeShort(any.toInt())
+            is Float -> dataOutputStream.writeFloat(any)
+            is Double -> dataOutputStream.writeDouble(any)
+            is Boolean -> dataOutputStream.writeBoolean(any)
+            else -> ObjectOutputStream(dataOutputStream).writeObject(any)
+        }
+    }
+
+    private fun anyToByteEncodingType(any: Any): Int {
+        return when (any) {
+            is Int -> +ChannelImpl.INT
+            is Byte -> +ChannelImpl.BYTE
+            is Char -> +ChannelImpl.CHAR
+            is String -> +ChannelImpl.UTF8
+            is Short -> +ChannelImpl.SHORT
+            is Float -> +ChannelImpl.FLOAT
+            is Double -> +ChannelImpl.DOUBLE
+            is Boolean -> +ChannelImpl.BOOLEAN
+            is IntArray -> -ChannelImpl.INT
+            is ByteArray -> -ChannelImpl.BYTE
+            is CharArray -> -ChannelImpl.CHAR
+            is ShortArray -> -ChannelImpl.SHORT
+            is FloatArray -> -ChannelImpl.FLOAT
+            is DoubleArray -> -ChannelImpl.DOUBLE
+            is BooleanArray -> -ChannelImpl.BOOLEAN
+            else -> +ChannelImpl.OBJECT
+        }
     }
 }
 
-class ReplyImpl<out Type>(val message: ReceivedMessage<Type>, val replyToID: Int) /*: MessageImpl<Type>(message.contents, message.id),*/ :Reply<Type>{
+class ToSendReplyImpl<Type>(channel: ChannelImpl, override val contents: Type, val replyToID: Int) :ToSendMessageImpl<Type>(channel,contents), ToSendMessage<Type> {
+    override fun writeMessagePreamble(dataOutputStream: DataOutputStream) {
+        dataOutputStream.writeByte(ChannelImpl.PROTOCOL_VERSION.toInt())
+        dataOutputStream.writeByte(ChannelImpl.REPLY_MESSAGE.toInt())
+        dataOutputStream.writeInt(replyToID)
+    }
+
+}
+
+open class MessageImpl<out Type>(override val contents: Type, override val id: Int, val channel:ChannelImpl) : ReceivedMessage<Type> {
+    override fun reply(reply: Reply<*>) {
+        channel.send(ToSendReplyImpl(channel,reply.contents,id))
+    }
+}
+
+class ReplyImpl<out Type>(val message: ReceivedMessage<Type>, val replyToID: Int) /*: MessageImpl<Type>(message.contents, message.id),*/ : Reply<Type> {
     override val id: Int
         get() = message.id
     override val contents: Type
@@ -51,7 +141,17 @@ class ReplyImpl<out Type>(val message: ReceivedMessage<Type>, val replyToID: Int
 }
 
 /**
- *
+ *  message specification:
+ *  protocol version (byte)
+ *  message type (byte)
+ *  for single message types:
+ *  content type (negative for array) (byte)
+ *  message id (int)
+ *  array length (if applicable) (int)
+ *  message contents
+ *  for reply message types:
+ *  id of message replying to
+ *  single message containing reply
  */
 class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, val name: String, val persist: Boolean = false, val channelHome: String = "/var/lib/java-simple-ipc") : Channel {
     companion object {
@@ -74,15 +174,17 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
 
         const val CLOSE_TIMEOUT: Long = 10
     }
+
     private val sendPipe: NamedPipe
 
     private val receivePipe: NamedPipe
     private val readerThread: Thread
     private var continueReading = true
-    private var messageIDCount = AtomicInteger(0)
+    internal var messageIDCount = AtomicInteger(0)
     private val replies = mutableMapOf<Int, Reply<*>>()
     private val onReply = mutableMapOf<Int, (message: ReceivedMessage<*>) -> Unit>()
     private val waiting = mutableMapOf<Int, ReentrantLock>()
+
     init {
         (File(channelHome)).mkdirs()
         //todo validate names
@@ -95,7 +197,7 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
                 while (continueReading) {
                     readHandleMessage()
                 }
-            }catch (interrupted : InterruptedException){
+            } catch (interrupted: InterruptedException) {
                 //todo log shutdown
             }
         }
@@ -104,7 +206,7 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
     private val receiveStream = receivePipe.readStream
     private val sendStream = sendPipe.writeStream
 
-    private fun readHandleMessage(){
+    private fun readHandleMessage() {
         val version = receiveStream.readByte()
         if (version != PROTOCOL_VERSION) {
             throw IllegalStateException("Wrong version")
@@ -117,8 +219,8 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
             REPLY_MESSAGE -> {
                 val replyToID = receiveStream.readInt()
                 val replyMessage: ReceivedMessage<*> = readSingleMessage()
-                val reply = ReplyImpl(replyMessage,replyToID)
-                handleReply(reply,replyToID)
+                val reply = ReplyImpl(replyMessage, replyToID)
+                handleReply(reply, replyToID)
             }
 
             else -> throw IllegalStateException("Invalid data received")
@@ -127,12 +229,12 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
 
     private fun readSingleMessage(): ReceivedMessage<*> {
         val contentsType = receiveStream.readByte()
-        val messageID : Int = receiveStream.readInt()
+        val messageID: Int = receiveStream.readInt()
         if (contentsType < 0) {
-            val arrayLength= receiveStream.readInt()
-            return MessageImpl((0 until arrayLength).map { readOfType(contentsType) }.toTypedArray(),messageID)
+            val arrayLength = receiveStream.readInt()
+            return MessageImpl((0 until arrayLength).map { readOfType(contentsType) }.toTypedArray(), messageID,this)
         }
-        return MessageImpl(readOfType(contentsType),messageID)
+        return MessageImpl(readOfType(contentsType), messageID,this)
     }
 
     private fun readOfType(contentsType: Byte): Any {
@@ -153,13 +255,13 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
     }
 
     private fun handleReply(reply: Reply<*>, replyToID: Int) {
-        if(replyToID in waiting){
+        if (replyToID in waiting) {
             replies[replyToID] = reply
             while (!waiting[replyToID]!!.isLocked);//prevents unlocking before locking
             waiting[replyToID]!!.unlock()
-        }else if (replyToID in onReply){
+        } else if (replyToID in onReply) {
             onReply[replyToID]!!(reply)
-        }else{
+        } else {
             throw IllegalStateException("Received a reply to a nonexistent message")
         }
     }
