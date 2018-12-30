@@ -76,7 +76,7 @@
         <dependency>
             <groupId>io.github.pirocks</groupId>
             <artifactId>simple-named-pipes-lib</artifactId>
-            <version>0.0.2-SNAPSHOT</version>
+            <version>0.0.5-SNAPSHOT</version>
         </dependency>
     </dependencies>
 

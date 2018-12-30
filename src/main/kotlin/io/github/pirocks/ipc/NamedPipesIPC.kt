@@ -1,16 +1,17 @@
 package io.github.pirocks.ipc
 
+import com.sun.security.auth.module.UnixSystem
 import io.github.pirocks.namedpipes.NamedPipe
-import java.io.DataOutputStream
-import java.io.File
-import java.io.ObjectInputStream
-import java.io.ObjectOutputStream
+import java.lang.IllegalArgumentException
 import java.lang.IllegalStateException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.experimental.and
+import java.io.*
+import java.nio.channels.FileLock
+
 
 open class NamedPipeToSendMessage<Type>(override val contents: Type, override val channel: NamedPipeChannel) :
         ToSendMessage<Type,NamedPipeChannel> {
@@ -49,6 +50,17 @@ open class NamedPipeToSendMessage<Type>(override val contents: Type, override va
             }
         } else {
             dataOutputStream.writeByte(anyToByteEncodingType(contentsCopy))
+            when (contentsCopy) {
+                is Int -> dataOutputStream.writeInt(contentsCopy)
+                is Byte -> dataOutputStream.writeByte(contentsCopy.toInt())
+                is Char -> dataOutputStream.writeChar(contentsCopy.toInt())
+                is String -> dataOutputStream.writeUTF(contentsCopy)
+                is Short -> dataOutputStream.writeShort(contentsCopy.toInt())
+                is Float -> dataOutputStream.writeFloat(contentsCopy)
+                is Double -> dataOutputStream.writeDouble(contentsCopy)
+                is Boolean -> dataOutputStream.writeBoolean(contentsCopy)
+                else -> ObjectOutputStream(dataOutputStream).writeObject(contentsCopy)
+            }
         }
     }
 
@@ -116,6 +128,9 @@ class NamedPipeReceivedReply<Type>(val message: NamedPipeReceivedMessage<Type>, 
 
 }
 
+private val filesystemLockProtector = ReentrantLock()// allows for filesystem locks to be used safely from the same jvm
+
+
 /**
  *  message specification:
  *  protocol version (byte)
@@ -129,7 +144,7 @@ class NamedPipeReceivedReply<Type>(val message: NamedPipeReceivedMessage<Type>, 
  *  id of message replying to
  *  single message containing reply
  */
-class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedPipeChannel>) -> Unit, val name: String, val persist: Boolean = false, val channelHome: String = "/var/lib/java-simple-ipc") : Channel<NamedPipeChannel> {
+class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedPipeChannel>) -> Unit, val name: String, val persist: Boolean = false, val channelHome: String = "/var/run/user/" + UnixSystem().uid + "/simple-java-ipc-named-pipes-lib/") : Channel<NamedPipeChannel> {
     companion object {
 
         //message types:
@@ -151,9 +166,9 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
         const val CLOSE_TIMEOUT: Long = 10
     }
 
-    private val sendPipe: NamedPipe
+    private lateinit var sendPipe: NamedPipe
 
-    private val receivePipe: NamedPipe
+    private lateinit var receivePipe: NamedPipe
     private val readerThread: Thread
     private var continueReading = true
     internal var messageIDCount = AtomicInteger(0)
@@ -161,40 +176,66 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
     private val onReply = ConcurrentHashMap<Int, (message: ReceivedMessage<*,NamedPipeChannel>) -> Unit>()
     private val waiting = ConcurrentHashMap<Int, ReentrantLock>()
 
+    private val sendStream : DataOutputStream
+    private lateinit var receiveStream : DataInputStream
+
     init {
-        (File(channelHome)).mkdirs()
-        //todo validate names, for security//paths
-        val sendName = name + "send"
-        sendPipe = NamedPipe(File(channelHome, sendName), openExistingFile = true, deleteOnClose = !persist)
-        val receiveName = name + "receive"
-        receivePipe = NamedPipe(File(channelHome, receiveName), openExistingFile = true, deleteOnClose = !persist)
-        readerThread = Thread {
+        val channelHomeCreated = (File(channelHome)).mkdir()
+        if (!channelHomeCreated && !File(channelHome).exists()){
+            throw IllegalArgumentException("Unable to create channel home directory")
+        }
+        openPipes()
+        readerThread = Thread( {
             try {
+                receiveStream = receivePipe.readStream
                 while (continueReading) {
                     readHandleMessage()
                 }
             } catch (interrupted: InterruptedException) {
                 //todo log shutdown
             }
+        },"NamedPipeReader")
+        readerThread.start()
+        sendStream = sendPipe.writeStream
+    }
+
+    private fun openPipes() {
+        filesystemLockProtector.withLock {
+            val fileLock = acquireFileSystemLock()
+            try {
+                sendPipe = NamedPipe(File(channelHome, name + "0"), openExistingFile = false,overWriteExistingFile = false, deleteOnClose = !persist)
+                receivePipe = NamedPipe(File(channelHome, name + "1"),openExistingFile = false,overWriteExistingFile = false, deleteOnClose = !persist)
+            }catch (e:NamedPipe.Companion.FileAlreadyExists){
+                sendPipe = NamedPipe(File(channelHome, name + "1"), openExistingFile = true,overWriteExistingFile = false, deleteOnClose = !persist)
+                receivePipe = NamedPipe(File(channelHome, name + "0"),openExistingFile = true,overWriteExistingFile = false, deleteOnClose = !persist)
+            }
+            releaseFileSystemLock(fileLock)
         }
     }
 
-    private val receiveStream = receivePipe.readStream
-    private val sendStream = sendPipe.writeStream
+    private fun acquireFileSystemLock(): FileLock {
+        val lockFile = File(channelHome, "$name.lock")
+        return RandomAccessFile(lockFile,"rw").channel.lock()
+    }
+
+    private fun releaseFileSystemLock(fileLock: FileLock){
+        fileLock.release()
+    }
 
     private fun readHandleMessage() {
         val version = receiveStream.readByte()
         if (version != PROTOCOL_VERSION) {
             throw IllegalStateException("Wrong version")
         }
+        val id = receiveStream.readInt()
         val type = receiveStream.readByte()
         return when (type) {
             SINGLE_MESSAGE -> {
-                handleMessage(readSingleMessage())
+                handleMessage(readSingleMessage(id))
             }
             REPLY_MESSAGE -> {
                 val replyToID = receiveStream.readInt()
-                val replyMessage: NamedPipeReceivedMessage<*> = readSingleMessage()
+                val replyMessage: NamedPipeReceivedMessage<*> = readSingleMessage(id)
                 val reply = NamedPipeReceivedReply(replyMessage, this)
                 handleReply(reply, replyToID)
             }
@@ -203,14 +244,13 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
         }
     }
 
-    private fun readSingleMessage(): NamedPipeReceivedMessage<*> {
+    private fun readSingleMessage(id : Int): NamedPipeReceivedMessage<*> {
         val contentsType = receiveStream.readByte()
-        val messageID: Int = receiveStream.readInt()
         if (contentsType < 0) {
             val arrayLength = receiveStream.readInt()
-            return NamedPipeReceivedMessage((0 until arrayLength).map { readOfType(contentsType) }.toTypedArray(),messageID,this)
+            return NamedPipeReceivedMessage((0 until arrayLength).map { readOfType(contentsType) }.toTypedArray(),id,this)
         }
-        return NamedPipeReceivedMessage(readOfType(contentsType),messageID,this)
+        return NamedPipeReceivedMessage(readOfType(contentsType),id,this)
     }
 
     private fun readOfType(contentsType: Byte): Any {
