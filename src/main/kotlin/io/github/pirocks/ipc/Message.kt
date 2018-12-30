@@ -8,35 +8,31 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.experimental.and
 
-interface Message<out Type> {
-    val id: Int
+interface Message<out Type, ChannelType: Channel<ChannelType>> {
     val contents: Type
+    val channel: ChannelType
 }
 
-interface ToSendMessage<MessageType> : Message<MessageType> {
+interface ToSendMessage<MessageType, ChannelType: Channel<ChannelType>> : Message<MessageType, ChannelType> {
     fun writeOut(dataOutputStream: DataOutputStream)
 }
 
-interface Reply<out MessageType> : ReceivedMessage<MessageType>
+interface Reply<out MessageType,ChannelType: Channel<ChannelType>> : ReceivedMessage<MessageType,ChannelType>
 
-interface ReceivedMessage<out Type> : Message<Type> {
-    fun reply(reply: Reply<*>)
-}
+interface ReceivedMessage<out Type,ChannelType: Channel<ChannelType>> : Message<Type,ChannelType>
 
-interface Channel : Closeable {
-    val onReceivedMessage: (ReceivedMessage<*>) -> Unit // not called for replies
-    fun sendAwaitReply(message: ToSendMessage<*>): Reply<*>
-    fun send(message: ToSendMessage<*>): Unit
-    fun send(message: ToSendMessage<*>, onReply: (message: ReceivedMessage<*>) -> Unit): Unit
+interface Channel<ChannelType: Channel<ChannelType>> : Closeable {
+    val onReceivedMessage: (ReceivedMessage<*,ChannelType>) -> Unit // not called for replies
+    fun sendAwaitReply(message: ToSendMessage<*,ChannelType>): Reply<*,ChannelType>
+    fun send(message: ToSendMessage<*,ChannelType>)
+    fun send(message: ToSendMessage<*,ChannelType>, onReply: (message: ReceivedMessage<*,ChannelType>) -> Unit)
     override fun close()
 }
 
-open class ToSendMessageImpl<Type>(channel: ChannelImpl, override val contents: Type) : ToSendMessage<Type> {
-
-    override val id: Int = channel.messageIDCount.getAndIncrement()//todo refactor to remove dependency on channel
+open class ToSendMessageImpl<Type,ChannelType: Channel<ChannelType>>(override val contents: Type, override val channel: ChannelType) : ToSendMessage<Type,ChannelType> {
 
     override fun writeOut(dataOutputStream: DataOutputStream) {
-        writeMessagePreamble(dataOutputStream)
+        writeMessageType(dataOutputStream)
         val contentsCopy = contents//needed for smart casting
         if (contentsCopy is Array<*>) {
             val len = contentsCopy.size
@@ -72,8 +68,7 @@ open class ToSendMessageImpl<Type>(channel: ChannelImpl, override val contents: 
         }
     }
 
-    protected open fun writeMessagePreamble(dataOutputStream: DataOutputStream) {
-        dataOutputStream.writeByte(ChannelImpl.PROTOCOL_VERSION.toInt())
+    protected open fun writeMessageType(dataOutputStream: DataOutputStream) {
         dataOutputStream.writeByte(ChannelImpl.SINGLE_MESSAGE.toInt())
     }
 
@@ -113,47 +108,37 @@ open class ToSendMessageImpl<Type>(channel: ChannelImpl, override val contents: 
     }
 }
 
-class ToSendReplyImpl<Type>(channel: ChannelImpl, override val contents: Type, val replyToID: Int) :ToSendMessageImpl<Type>(channel,contents), ToSendMessage<Type> {
-    override fun writeMessagePreamble(dataOutputStream: DataOutputStream) {
-        dataOutputStream.writeByte(ChannelImpl.PROTOCOL_VERSION.toInt())
+class ToSendReplyImpl<Type,ChannelType: Channel<ChannelType>>(override val contents: Type, val replyToID: Int,channel: ChannelType) :ToSendMessageImpl<Type,ChannelType>(contents,channel), ToSendMessage<Type,ChannelType> {
+    override fun writeMessageType(dataOutputStream: DataOutputStream) {
         dataOutputStream.writeByte(ChannelImpl.REPLY_MESSAGE.toInt())
         dataOutputStream.writeInt(replyToID)
     }
 
 }
 
-open class MessageImpl<out Type>(override val contents: Type, override val id: Int, val channel:ChannelImpl) : ReceivedMessage<Type> {
-    override fun reply(reply: Reply<*>) {
-        channel.send(ToSendReplyImpl(channel,reply.contents,id))
-    }
+open class ReceivedMessageImpl<out Type,ChannelType: Channel<ChannelType>>(override val contents: Type, override val channel: ChannelType) : ReceivedMessage<Type,ChannelType> {
 }
 
-class ReplyImpl<out Type>(val message: ReceivedMessage<Type>, val replyToID: Int) /*: MessageImpl<Type>(message.contents, message.id),*/ : Reply<Type> {
-    override val id: Int
-        get() = message.id
-    override val contents: Type
+class ReceivedReplyImpl<out Type,ChannelType:Channel<ChannelType>>(val message: ReceivedMessage<Type,ChannelType>, val replyToID: Int, channel: ChannelType) : ReceivedMessageImpl<Type,ChannelType>(message.contents,channel) , Reply<Type,ChannelType> {
+    override val contents
         get() = message.contents
-
-    override fun reply(reply: Reply<*>) {
-        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-    }
 
 }
 
 /**
  *  message specification:
  *  protocol version (byte)
+ *  message id (int)
  *  message type (byte)
  *  for single message types:
  *  content type (negative for array) (byte)
- *  message id (int)
  *  array length (if applicable) (int)
  *  message contents
  *  for reply message types:
  *  id of message replying to
  *  single message containing reply
  */
-class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, val name: String, val persist: Boolean = false, val channelHome: String = "/var/lib/java-simple-ipc") : Channel {
+class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*,ChannelImpl>) -> Unit, val name: String, val persist: Boolean = false, val channelHome: String = "/var/lib/java-simple-ipc") : Channel<ChannelImpl> {
     companion object {
 
         //message types:
@@ -181,8 +166,8 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
     private val readerThread: Thread
     private var continueReading = true
     internal var messageIDCount = AtomicInteger(0)
-    private val replies = mutableMapOf<Int, Reply<*>>()
-    private val onReply = mutableMapOf<Int, (message: ReceivedMessage<*>) -> Unit>()
+    private val replies = mutableMapOf<Int, Reply<*,ChannelImpl>>()
+    private val onReply = mutableMapOf<Int, (message: ReceivedMessage<*,ChannelImpl>) -> Unit>()
     private val waiting = mutableMapOf<Int, ReentrantLock>()
 
     init {
@@ -218,8 +203,8 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
             }
             REPLY_MESSAGE -> {
                 val replyToID = receiveStream.readInt()
-                val replyMessage: ReceivedMessage<*> = readSingleMessage()
-                val reply = ReplyImpl(replyMessage, replyToID)
+                val replyMessage: ReceivedMessage<*,ChannelImpl> = readSingleMessage()
+                val reply = ReceivedReplyImpl(replyMessage, replyToID,this)
                 handleReply(reply, replyToID)
             }
 
@@ -227,14 +212,14 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
         }
     }
 
-    private fun readSingleMessage(): ReceivedMessage<*> {
+    private fun readSingleMessage(): ReceivedMessage<*,ChannelImpl> {
         val contentsType = receiveStream.readByte()
         val messageID: Int = receiveStream.readInt()
         if (contentsType < 0) {
             val arrayLength = receiveStream.readInt()
-            return MessageImpl((0 until arrayLength).map { readOfType(contentsType) }.toTypedArray(), messageID,this)
+            return ReceivedMessageImpl((0 until arrayLength).map { readOfType(contentsType) }.toTypedArray(),this)
         }
-        return MessageImpl(readOfType(contentsType), messageID,this)
+        return ReceivedMessageImpl(readOfType(contentsType),this)
     }
 
     private fun readOfType(contentsType: Byte): Any {
@@ -254,7 +239,7 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
         }
     }
 
-    private fun handleReply(reply: Reply<*>, replyToID: Int) {
+    private fun handleReply(reply: Reply<*,ChannelImpl>, replyToID: Int) {
         if (replyToID in waiting) {
             replies[replyToID] = reply
             while (!waiting[replyToID]!!.isLocked);//prevents unlocking before locking
@@ -266,30 +251,44 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
         }
     }
 
-    private fun handleMessage(message: ReceivedMessage<*>) {
+    private fun handleMessage(message: ReceivedMessage<*,ChannelImpl>) {
         onReceivedMessage.invoke(message)
     }
 
     private val sendLock = ReentrantLock()
 
-    override fun sendAwaitReply(message: ToSendMessage<*>): Reply<*> {
-        waiting[message.id] = ReentrantLock()
-        send(message)
-        waiting[message.id]!!.lock()
-        waiting.remove(message.id)//don't leak locks
-        val reply = replies[message.id]!!
-        waiting.remove(message.id)//don't leak replies
-        return reply
+    private fun writePreamble(id : Int){
+        assert(sendLock.isHeldByCurrentThread)
+        sendStream.writeByte(PROTOCOL_VERSION.toInt())
+        sendStream.writeInt(id)
     }
 
-    override fun send(message: ToSendMessage<*>) {
+    private fun sendImpl(message: ToSendMessage<*, ChannelImpl>, id : Int){
         sendLock.withLock {
+            writePreamble(id)
             message.writeOut(sendStream)
         }
     }
 
-    override fun send(message: ToSendMessage<*>, onReply: (message: ReceivedMessage<*>) -> Unit) {
-        this.onReply[message.id] = onReply
+    override fun send(message: ToSendMessage<*,ChannelImpl>) {
+        val id = messageIDCount.getAndIncrement()
+        sendImpl(message, id)
+    }
+
+    override fun sendAwaitReply(message: ToSendMessage<*,ChannelImpl>): Reply<*,ChannelImpl> {
+        val messageId = messageIDCount.getAndIncrement()
+        waiting[messageId] = ReentrantLock()
+        send(message)
+        waiting[messageId]!!.lock()
+        waiting.remove(messageId)//don't leak locks
+        val reply = replies[messageId]!!
+        waiting.remove(messageId)//don't leak replies
+        return reply
+    }
+
+    override fun send(message: ToSendMessage<*,ChannelImpl>, onReply: (message: ReceivedMessage<*,ChannelImpl>) -> Unit) {
+        val messageId = messageIDCount.getAndIncrement()
+        this.onReply[messageId] = onReply
         send(message)
     }
 
@@ -297,8 +296,7 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*>) -> Unit, 
         continueReading = true
         try {
             readerThread.join(CLOSE_TIMEOUT)
-        } catch (interruptedException: InterruptedException) {
-        }
+        } catch (interruptedException: InterruptedException) {}
         readerThread.interrupt()
         sendPipe.close()
     }
