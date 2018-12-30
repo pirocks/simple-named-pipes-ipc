@@ -3,6 +3,7 @@ package io.github.pirocks.ipc
 import io.github.pirocks.namedpipes.NamedPipe
 import java.io.*
 import java.lang.IllegalStateException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -166,9 +167,9 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*,ChannelImpl
     private val readerThread: Thread
     private var continueReading = true
     internal var messageIDCount = AtomicInteger(0)
-    private val replies = mutableMapOf<Int, Reply<*,ChannelImpl>>()
-    private val onReply = mutableMapOf<Int, (message: ReceivedMessage<*,ChannelImpl>) -> Unit>()
-    private val waiting = mutableMapOf<Int, ReentrantLock>()
+    private val replies = ConcurrentHashMap<Int, Reply<*,ChannelImpl>>()
+    private val onReply = ConcurrentHashMap<Int, (message: ReceivedMessage<*,ChannelImpl>) -> Unit>()
+    private val waiting = ConcurrentHashMap<Int, ReentrantLock>()
 
     init {
         (File(channelHome)).mkdirs()
