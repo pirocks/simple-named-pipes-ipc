@@ -12,7 +12,7 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.experimental.and
 
-open class ToSendMessageImpl<Type>(override val contents: Type, override val channel: ChannelImpl) : ToSendMessage<Type,ChannelImpl> {
+open class NamedPipeToSendMessage<Type>(override val contents: Type, override val channel: NamedPipeChannel) : ToSendMessage<Type,NamedPipeChannel> {
 
     override fun writeOut(dataOutputStream: DataOutputStream) {
         writeMessageType(dataOutputStream)
@@ -52,7 +52,7 @@ open class ToSendMessageImpl<Type>(override val contents: Type, override val cha
     }
 
     protected open fun writeMessageType(dataOutputStream: DataOutputStream) {
-        dataOutputStream.writeByte(ChannelImpl.SINGLE_MESSAGE.toInt())
+        dataOutputStream.writeByte(NamedPipeChannel.SINGLE_MESSAGE.toInt())
     }
 
     private fun writeAny(any: Any, dataOutputStream: DataOutputStream) {
@@ -71,37 +71,37 @@ open class ToSendMessageImpl<Type>(override val contents: Type, override val cha
 
     private fun anyToByteEncodingType(any: Any): Int {
         return when (any) {
-            is Int -> +ChannelImpl.INT
-            is Byte -> +ChannelImpl.BYTE
-            is Char -> +ChannelImpl.CHAR
-            is String -> +ChannelImpl.UTF8
-            is Short -> +ChannelImpl.SHORT
-            is Float -> +ChannelImpl.FLOAT
-            is Double -> +ChannelImpl.DOUBLE
-            is Boolean -> +ChannelImpl.BOOLEAN
-            is IntArray -> -ChannelImpl.INT
-            is ByteArray -> -ChannelImpl.BYTE
-            is CharArray -> -ChannelImpl.CHAR
-            is ShortArray -> -ChannelImpl.SHORT
-            is FloatArray -> -ChannelImpl.FLOAT
-            is DoubleArray -> -ChannelImpl.DOUBLE
-            is BooleanArray -> -ChannelImpl.BOOLEAN
-            else -> +ChannelImpl.OBJECT
+            is Int -> +NamedPipeChannel.INT
+            is Byte -> +NamedPipeChannel.BYTE
+            is Char -> +NamedPipeChannel.CHAR
+            is String -> +NamedPipeChannel.UTF8
+            is Short -> +NamedPipeChannel.SHORT
+            is Float -> +NamedPipeChannel.FLOAT
+            is Double -> +NamedPipeChannel.DOUBLE
+            is Boolean -> +NamedPipeChannel.BOOLEAN
+            is IntArray -> -NamedPipeChannel.INT
+            is ByteArray -> -NamedPipeChannel.BYTE
+            is CharArray -> -NamedPipeChannel.CHAR
+            is ShortArray -> -NamedPipeChannel.SHORT
+            is FloatArray -> -NamedPipeChannel.FLOAT
+            is DoubleArray -> -NamedPipeChannel.DOUBLE
+            is BooleanArray -> -NamedPipeChannel.BOOLEAN
+            else -> +NamedPipeChannel.OBJECT
         }
     }
 }
 
-class ToSendReplyImpl<Type>(override val contents: Type, val replyToID: Int,channel: ChannelImpl) :ToSendMessageImpl<Type>(contents,channel), ToSendMessage<Type,ChannelImpl> {
+class NamedPipeToSendReply<Type>(override val contents: Type, val replyToID: Int, channel: NamedPipeChannel) :NamedPipeToSendMessage<Type>(contents,channel), ToSendMessage<Type,NamedPipeChannel> {
     override fun writeMessageType(dataOutputStream: DataOutputStream) {
-        dataOutputStream.writeByte(ChannelImpl.REPLY_MESSAGE.toInt())
+        dataOutputStream.writeByte(NamedPipeChannel.REPLY_MESSAGE.toInt())
         dataOutputStream.writeInt(replyToID)
     }
 
 }
 
-open class ReceivedMessageImpl<Type>(override val contents: Type, override val channel: ChannelImpl) : ReceivedMessage<Type,ChannelImpl>
+open class NamedPipeReceivedMessage<Type>(override val contents: Type, override val channel: NamedPipeChannel) : ReceivedMessage<Type,NamedPipeChannel>
 
-class ReceivedReplyImpl<Type>(val message: ReceivedMessage<Type, ChannelImpl>, channel: ChannelImpl) : ReceivedMessageImpl<Type>(message.contents,channel) , Reply<Type,ChannelImpl> {
+class NamedPipeReceivedReply<Type>(val message: ReceivedMessage<Type, NamedPipeChannel>, channel: NamedPipeChannel) : NamedPipeReceivedMessage<Type>(message.contents,channel) , Reply<Type,NamedPipeChannel> {
     override val contents
         get() = message.contents
 
@@ -120,7 +120,7 @@ class ReceivedReplyImpl<Type>(val message: ReceivedMessage<Type, ChannelImpl>, c
  *  id of message replying to
  *  single message containing reply
  */
-class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*,ChannelImpl>) -> Unit, val name: String, val persist: Boolean = false, val channelHome: String = "/var/lib/java-simple-ipc") : Channel<ChannelImpl> {
+class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedPipeChannel>) -> Unit, val name: String, val persist: Boolean = false, val channelHome: String = "/var/lib/java-simple-ipc") : Channel<NamedPipeChannel> {
     companion object {
 
         //message types:
@@ -148,8 +148,8 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*,ChannelImpl
     private val readerThread: Thread
     private var continueReading = true
     internal var messageIDCount = AtomicInteger(0)
-    private val replies = ConcurrentHashMap<Int, Reply<*,ChannelImpl>>()
-    private val onReply = ConcurrentHashMap<Int, (message: ReceivedMessage<*,ChannelImpl>) -> Unit>()
+    private val replies = ConcurrentHashMap<Int, Reply<*,NamedPipeChannel>>()
+    private val onReply = ConcurrentHashMap<Int, (message: ReceivedMessage<*,NamedPipeChannel>) -> Unit>()
     private val waiting = ConcurrentHashMap<Int, ReentrantLock>()
 
     init {
@@ -185,8 +185,8 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*,ChannelImpl
             }
             REPLY_MESSAGE -> {
                 val replyToID = receiveStream.readInt()
-                val replyMessage: ReceivedMessage<*,ChannelImpl> = readSingleMessage()
-                val reply = ReceivedReplyImpl(replyMessage, this)
+                val replyMessage: ReceivedMessage<*,NamedPipeChannel> = readSingleMessage()
+                val reply = NamedPipeReceivedReply(replyMessage, this)
                 handleReply(reply, replyToID)
             }
 
@@ -194,14 +194,14 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*,ChannelImpl
         }
     }
 
-    private fun readSingleMessage(): ReceivedMessage<*,ChannelImpl> {
+    private fun readSingleMessage(): ReceivedMessage<*,NamedPipeChannel> {
         val contentsType = receiveStream.readByte()
         val messageID: Int = receiveStream.readInt()
         if (contentsType < 0) {
             val arrayLength = receiveStream.readInt()
-            return ReceivedMessageImpl((0 until arrayLength).map { readOfType(contentsType) }.toTypedArray(),this)
+            return NamedPipeReceivedMessage((0 until arrayLength).map { readOfType(contentsType) }.toTypedArray(),this)
         }
-        return ReceivedMessageImpl(readOfType(contentsType),this)
+        return NamedPipeReceivedMessage(readOfType(contentsType),this)
     }
 
     private fun readOfType(contentsType: Byte): Any {
@@ -221,7 +221,7 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*,ChannelImpl
         }
     }
 
-    private fun handleReply(reply: Reply<*,ChannelImpl>, replyToID: Int) {
+    private fun handleReply(reply: Reply<*,NamedPipeChannel>, replyToID: Int) {
         if (replyToID in waiting) {
             replies[replyToID] = reply
             while (!waiting[replyToID]!!.isLocked);//prevents unlocking before locking
@@ -233,7 +233,7 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*,ChannelImpl
         }
     }
 
-    private fun handleMessage(message: ReceivedMessage<*,ChannelImpl>) {
+    private fun handleMessage(message: ReceivedMessage<*,NamedPipeChannel>) {
         onReceivedMessage.invoke(message)
     }
 
@@ -245,19 +245,19 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*,ChannelImpl
         sendStream.writeInt(id)
     }
 
-    private fun sendImpl(message: ToSendMessage<*, ChannelImpl>, id : Int){
+    private fun sendImpl(message: ToSendMessage<*, NamedPipeChannel>, id : Int){
         sendLock.withLock {
             writePreamble(id)
             message.writeOut(sendStream)
         }
     }
 
-    override fun send(message: ToSendMessage<*,ChannelImpl>) {
+    override fun send(message: ToSendMessage<*,NamedPipeChannel>) {
         val id = messageIDCount.getAndIncrement()
         sendImpl(message, id)
     }
 
-    override fun sendAwaitReply(message: ToSendMessage<*,ChannelImpl>): Reply<*,ChannelImpl> {
+    override fun sendAwaitReply(message: ToSendMessage<*,NamedPipeChannel>): Reply<*,NamedPipeChannel> {
         val messageId = messageIDCount.getAndIncrement()
         waiting[messageId] = ReentrantLock()
         send(message)
@@ -268,7 +268,7 @@ class ChannelImpl(override val onReceivedMessage: (ReceivedMessage<*,ChannelImpl
         return reply
     }
 
-    override fun send(message: ToSendMessage<*,ChannelImpl>, onReply: (message: ReceivedMessage<*,ChannelImpl>) -> Unit) {
+    override fun send(message: ToSendMessage<*,NamedPipeChannel>, onReply: (message: ReceivedMessage<*,NamedPipeChannel>) -> Unit) {
         val messageId = messageIDCount.getAndIncrement()
         this.onReply[messageId] = onReply
         send(message)
