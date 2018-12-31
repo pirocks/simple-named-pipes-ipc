@@ -6,6 +6,6 @@ A (hopefully) simple library for interprocess communication between 2 processes 
 <dependency>
   <groupId>io.github.pirocks</groupId>
   <artifactId>named-pipes-ipc-lib</artifactId>
-  <version>0.0.1</version>
+  <version>0.0.2</version>
 </dependency>
 ```
