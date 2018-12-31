@@ -3,11 +3,11 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    <name>A Simple Algebra Library</name>
-    <description></description>
-    <url></url>
+    <name>A Simple Named Pipes Java IPC Library</name>
+    <description>A simple library for communicating between java processes using named pipes.</description>
+    <url>https://github.com/pirocks/simple-named-pipes-ipc</url>
     <scm>
-        <url></url>
+        <url>https://github.com/pirocks/simple-named-pipes-ipc.git</url>
     </scm>
     <developers>
         <developer>
@@ -27,7 +27,7 @@
 
     <groupId>io.github.pirocks</groupId>
     <artifactId>named-pipes-ipc-lib</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>0.0.1</version>
 
     <properties>
         <kotlin.version>1.3.11</kotlin.version>
@@ -76,7 +76,7 @@
         <dependency>
             <groupId>io.github.pirocks</groupId>
             <artifactId>simple-named-pipes-lib</artifactId>
-            <version>0.0.5-SNAPSHOT</version>
+            <version>0.0.5</version>
         </dependency>
     </dependencies>
 

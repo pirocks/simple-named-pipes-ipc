@@ -223,7 +223,13 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
     }
 
     private fun readHandleMessage() {
-        val version = receiveStream.readByte()
+        val version: Byte
+        try{
+            version = receiveStream.readByte()
+        }catch (eof: EOFException){
+            //todo handle shutdown eof
+            throw InterruptedException()
+        }
         if (version != PROTOCOL_VERSION) {
             throw IllegalStateException("Wrong version")
         }

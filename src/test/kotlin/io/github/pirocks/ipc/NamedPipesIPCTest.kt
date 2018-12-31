@@ -15,6 +15,7 @@ class SimpleIntegerTest{
         repeat(timesToSend){
             channel.send(NamedPipeToSendMessage(integerToSend,channel))
         }
+        channel.close()
     },"sendInt")
 
     var timesReceived = 0
