@@ -11,6 +11,7 @@ import kotlin.concurrent.withLock
 import kotlin.experimental.and
 import java.io.*
 import java.nio.channels.FileLock
+import java.util.concurrent.Semaphore
 
 
 open class NamedPipeToSendMessage<Type>(override val contents: Type, override val channel: NamedPipeChannel) :
@@ -172,9 +173,7 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
     private val readerThread: Thread
     private var continueReading = true
     internal var messageIDCount = AtomicInteger(0)
-    private val replies = ConcurrentHashMap<Int, Reply<*,NamedPipeChannel>>()
-    private val onReply = ConcurrentHashMap<Int, (message: ReceivedMessage<*,NamedPipeChannel>) -> Unit>()
-    private val waiting = ConcurrentHashMap<Int, ReentrantLock>()
+    private val onReply = ConcurrentHashMap<Int, (message: Reply<*,NamedPipeChannel>) -> Unit>()
 
     private val sendStream : DataOutputStream
     private lateinit var receiveStream : DataInputStream
@@ -277,14 +276,11 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
     }
 
     private fun handleReply(reply: Reply<*,NamedPipeChannel>, replyToID: Int) {
-        when (replyToID) {
-            in waiting -> {
-                replies[replyToID] = reply
-                while (!waiting[replyToID]!!.isLocked);//prevents unlocking before locking
-                waiting[replyToID]!!.unlock()
-            }
-            in onReply -> onReply[replyToID]!!(reply)
-            else -> throw IllegalStateException("Received a reply to a nonexistent message")
+        if (replyToID in this.onReply.keys) {
+            onReply[replyToID]!!(reply)
+        }else{
+            println("Unexpected reply to:$replyToID")
+            handleMessage(reply)
         }
     }
 
@@ -313,20 +309,20 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
     }
 
     override fun sendAwaitReply(message: ToSendMessage<*,NamedPipeChannel>): Reply<*,NamedPipeChannel> {
-        val messageId = messageIDCount.getAndIncrement()
-        waiting[messageId] = ReentrantLock()
-        send(message)
-        waiting[messageId]!!.lock()
-        waiting.remove(messageId)//don't leak locks
-        val reply = replies[messageId]!!
-        waiting.remove(messageId)//don't leak replies
-        return reply
+        val sema = Semaphore(0)
+        var reply: Reply<*,NamedPipeChannel>? = null;
+        send(message) {
+            sema.release()
+            reply = it
+        }
+        sema.acquire()
+        return reply!!
     }
 
-    override fun send(message: ToSendMessage<*,NamedPipeChannel>, onReply: (message: ReceivedMessage<*,NamedPipeChannel>) -> Unit) {
+    override fun send(message: ToSendMessage<*,NamedPipeChannel>, onReply: (message: Reply<*,NamedPipeChannel>) -> Unit) {
         val messageId = messageIDCount.getAndIncrement()
         this.onReply[messageId] = onReply
-        send(message)
+        sendImpl(message,messageId)
     }
 
     override fun close() {

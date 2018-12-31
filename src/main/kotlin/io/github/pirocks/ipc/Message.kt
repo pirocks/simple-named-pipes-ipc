@@ -22,7 +22,7 @@ interface Channel<ChannelType: Channel<ChannelType>> : Closeable {
     val onReceivedMessage: (ReceivedMessage<*,ChannelType>) -> Unit // not called for replies
     fun sendAwaitReply(message: ToSendMessage<*,ChannelType>): Reply<*,ChannelType>
     fun send(message: ToSendMessage<*,ChannelType>)
-    fun send(message: ToSendMessage<*,ChannelType>, onReply: (message: ReceivedMessage<*,ChannelType>) -> Unit)
+    fun send(message: ToSendMessage<*,ChannelType>, onReply: (message: Reply<*,ChannelType>) -> Unit)
     override fun close()
 }
 

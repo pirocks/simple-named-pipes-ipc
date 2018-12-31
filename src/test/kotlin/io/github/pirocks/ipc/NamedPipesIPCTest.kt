@@ -1,9 +1,12 @@
 package io.github.pirocks.ipc
 
-import io.github.pirocks.namedpipes.NamedPipe
 import org.junit.Assert
 import org.junit.Test
+import java.io.Serializable
 import java.nio.file.Files
+import java.util.concurrent.Semaphore
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 class SimpleIntegerTest{
     private val integerToSend = 6
@@ -41,5 +44,42 @@ class SimpleIntegerTest{
 }
 
 class RepliesTest{
+    data class TypeToSend(val i : Int, val c: Char): Serializable
+    private val toSend : TypeToSend = TypeToSend(9089,'c')
+    private val toReply : TypeToSend = TypeToSend(8970,'a')
+    private val channelHome = Files.createTempDirectory("ipc-test").toString()
+    private var numReplies = 0
 
+    private val send = Thread({
+        val channel = NamedPipeChannel({},"reply-test",false,channelHome)
+        val sendAwaitReply = channel.sendAwaitReply(NamedPipeToSendMessage(toSend, channel))
+        Assert.assertEquals(sendAwaitReply.contents,toReply)
+        val awaitReplySema = Semaphore(0)
+        var received = false
+        channel.send(NamedPipeToSendMessage(toSend,channel)) {
+            received = true
+            Assert.assertEquals(sendAwaitReply.contents,toReply)
+            awaitReplySema.release()
+        }
+        awaitReplySema.acquire()
+        Assert.assertTrue(received)
+
+    },"send")
+
+    private val reply = Thread({
+        val channel = NamedPipeChannel({
+            numReplies++
+            Assert.assertEquals(it.contents,toSend)
+            it.reply(NamedPipeToSendMessage(toReply,it.channel))
+        },"reply-test",false,channelHome)
+    },"reply")
+
+    @Test
+    fun testReply(){
+        send.start()
+        reply.start()
+        send.join()
+        reply.join()
+        Assert.assertEquals(numReplies,2)
+    }
 }
