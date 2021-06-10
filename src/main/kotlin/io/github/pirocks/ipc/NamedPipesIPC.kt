@@ -259,7 +259,8 @@ class NamedPipeChannel(override val onReceivedMessage: (ReceivedMessage<*,NamedP
     }
 
     private fun readOfType(contentsType: Byte): Any {
-        return when (contentsType.and(0x7f)) {
+        val absolute = if(contentsType < 0) (-contentsType).toByte() else contentsType
+        return when (absolute) {
             INT -> receiveStream.readInt()
             BYTE -> receiveStream.readByte()
             CHAR -> receiveStream.readChar()
